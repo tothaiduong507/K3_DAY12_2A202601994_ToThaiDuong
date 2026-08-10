@@ -4,7 +4,7 @@
 # Dưới đây là Dockerfile "chạy được nhưng chưa production": một stage,
 # chạy bằng user root, không có health check, base image nặng.
 #
-# NHIỆM VỤ: sửa file này thành bản production-ready. Yêu cầu:
+# NHIỆM VỤ — TODO (CP2) (done): sửa file này thành bản production-ready. Yêu cầu:
 #   [ ] Multi-stage build: stage `builder` cài dependency, stage runtime
 #       chỉ copy kết quả sang → image nhỏ hơn, không mang theo compiler.
 #       Cú pháp: `FROM python:3.11-slim AS builder`
@@ -21,14 +21,40 @@
 #            docker images day12-agent:prod     # xem dung lượng
 # ═══════════════════════════════════════════════════════════════════
 
-FROM python:3.11
+# TODO (CP2) (done): multi-stage, image slim, cache dependency, non-root,
+# healthcheck và cổng PORT động được triển khai bên dưới.
+FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-COPY . .
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-RUN pip install -r requirements.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+FROM python:3.11-slim AS runtime
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=8000
+
+WORKDIR /app
+
+RUN addgroup --system app \
+    && adduser --system --ingroup app app
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=app:app app ./app
+COPY --chown=app:app utils ./utils
+
+USER app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.getenv('PORT', '8000') + '/health', timeout=2)" || exit 1
+
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
